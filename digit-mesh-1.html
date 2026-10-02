@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Digit Mesh</title>
+<style>
+:root{--bg:#f4f5f7;--card:#fff;--tx:#1b1f27;--mu:#6b7280;--bd:#dfe3e9;--edge:#7d8696;--gt:#c4ecd8;--gs:#2e9e6b;--bt:#cfdcf7;--bs:#4a7bd8;--rt:#f8cfdb;--rs:#d9577a;--nt:#fff}
+@media(prefers-color-scheme:dark){:root{--bg:#12151a;--card:#1b1f27;--tx:#e8eaee;--mu:#98a1b0;--bd:#2c323d;--edge:#8a93a3;--gt:#1f5e44;--bt:#27427c;--rt:#74304a;--nt:#232833}}
+*{box-sizing:border-box}
+body{margin:0;padding:12px;font:14px system-ui,sans-serif;background:var(--bg);color:var(--tx)}
+header{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;margin-bottom:12px}
+h1{font-size:16px;margin:0}
+#st{font-size:12px;color:var(--mu)}
+#st:before{content:"";display:inline-block;width:8px;height:8px;border-radius:50%;background:#bbb;margin-right:6px}
+#st.on:before{background:var(--gs)}
+#grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:12px}
+.card h2{font-size:13px;margin:0 0 8px}
+.row{display:flex;gap:8px;margin-bottom:6px}
+.row label{flex:1;font-size:11px;color:var(--mu)}
+select,input{width:100%;margin-top:2px;padding:6px;font:inherit;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--tx)}
+svg{width:100%;height:auto;display:block}
+.e{stroke:var(--edge);fill:none}
+.n{fill:var(--nt);stroke:var(--bd);stroke-width:1.5}
+.n.m{fill:var(--gt);stroke:var(--gs)}.n.s{fill:var(--bt);stroke:var(--bs)}.n.l{fill:var(--rt);stroke:var(--rs)}
+.n.c{stroke:var(--tx);stroke-width:3}
+text{fill:var(--tx);text-anchor:middle;font-family:inherit}
+.sig{margin-top:8px;padding:8px;border-radius:8px;background:var(--bg);font-weight:600}
+.sig small{display:block;font-weight:400;color:var(--mu);margin-top:2px}
+.strip{display:flex;gap:3px;margin-top:6px;flex-wrap:wrap}
+.strip span{width:20px;text-align:center;padding:2px 0;border-radius:4px;background:var(--bg);font-size:12px}
+.strip span:last-child{background:var(--tx);color:var(--bg)}
+footer{margin-top:12px;font-size:12px;color:var(--mu)}
+table{width:100%;border-collapse:collapse;font-size:12px}td,th{padding:4px 6px;border-bottom:1px solid var(--bd);text-align:left}tr.ag td{background:var(--gt)}
+details.card{margin-bottom:12px}summary{cursor:pointer;font-weight:600}.fl{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin:8px 0}.fl label{font-size:11px;color:var(--mu)}
+button{padding:8px 14px;border:0;border-radius:6px;background:var(--bs);color:#fff;font:inherit;cursor:pointer}
+</style></head><body>
+<header><h1>Digit Mesh &middot; last-digit transitions</h1><span id="st">connecting…</span></header>
+<details class="card" id="sup"><summary>Supatrader connection <small style="color:var(--mu);font-weight:400">live digit agreement + XML bots</small></summary>
+<div class="row" style="margin-top:8px"><label>Scan strategy<select id="ss"><option value="ou">Over / Under transitions</option><option value="match">Matches (next digit)</option></select></label></div>
+<div style="overflow-x:auto"><table id="sc"></table></div>
+<p style="font-size:12px;color:var(--mu)">Agree = all three panel lookbacks give the same suggestion. They share overlapping data, so it is not independent confirmation.</p>
+<h2>XML bot (Deriv Bot Builder)</h2>
+<div class="fl"><label>Index<select id="xs"></select></label>
+<label>Contract<select id="xc"><option value="DIGITMATCH">Matches</option><option value="DIGITDIFF">Differs</option><option value="DIGITOVER">Over</option><option value="DIGITUNDER">Under</option></select></label>
+<label>Digit<select id="xd"></select></label>
+<label>Stake<input id="xk" type="number" step="0.01" value="0.35"></label>
+<label>Martingale x<input id="xm" type="number" step="0.1" value="2"></label>
+<label>Max stake<input id="xx" type="number" step="0.01" value="5"></label>
+<label>Take profit<input id="xt" type="number" value="10"></label>
+<label>Stop loss<input id="xl" type="number" value="8"></label></div>
+<button id="dl">Download XML</button></details>
+<div id="grid"></div>
+<footer>Deriv synthetic index digits come from a random number generator. These numbers describe recent history and cannot predict the next digit, so a "signal" here is often just noise. Martingale stakes grow after every loss; the stop loss only limits the damage. Test on a demo account only.</footer>
+<script>
+const SYMS=[...[10,25,50,75,100].map(n=>["R_"+n,"Volatility "+n]),...[10,15,25,30,50,75,90,100].map(n=>["1HZ"+n+"V","Volatility "+n+" (1s)"])];
+const store={};let ws,raf=0;
+const panels=[{sym:"1HZ100V",lb:100,strat:"ou"},{sym:"1HZ100V",lb:150,strat:"ou"},{sym:"1HZ100V",lb:200,strat:"ou"}];
+const dig=(p,pip)=>+Number(p).toFixed(pip).slice(-1);
+
+function sub(sym){
+  const s=store[sym]||(store[sym]={d:[],pip:2,sub:false});
+  if(s.sub||!ws||ws.readyState!==1)return;
+  s.sub=true;
+  ws.send(JSON.stringify({ticks_history:sym,count:1000,end:"latest",style:"ticks",subscribe:1}));
+}
+const EP=["wss://api.derivws.com/trading/v1/options/ws/public","wss://ws.derivws.com/websockets/v3?app_id=1089","wss://ws.binaryws.com/websockets/v3?app_id=1089"];
+let ei=0,opened=false;
+function connect(){
+  const url=EP[ei],host=url.split("/")[2];opened=false;
+  const st=document.getElementById("st");st.className="";st.textContent="connecting to "+host+"…";
+  try{ws=new WebSocket(url)}catch(e){st.textContent="cannot open "+host+": "+e.message;ei=(ei+1)%EP.length;setTimeout(connect,2000);return}
+  ws.onopen=()=>{opened=true;st.className="on";st.textContent="live · "+host;SYMS.forEach(x=>sub(x[0]))};
+  ws.onerror=()=>{st.textContent="error on "+host};
+  ws.onclose=e=>{Object.values(store).forEach(s=>s.sub=false);
+    if(!opened)ei=(ei+1)%EP.length;
+    st.className="";st.textContent=(opened?"disconnected":"failed")+" ("+host+", code "+e.code+") – retrying…";setTimeout(connect,opened?2000:2500)};
+  ws.onmessage=e=>{
+    const m=JSON.parse(e.data);
+    if(!m.error&&m.errors&&m.errors[0])m.error=m.errors[0];
+    if(m.error){const q=m.echo_req&&m.echo_req.ticks_history;if(q&&store[q]){store[q].err=m.error.message;draw()}else st.textContent="error: "+m.error.message;return}
+    if(m.msg_type==="history"){
+      const s=store[m.echo_req.ticks_history];s.pip=m.pip_size;s.err=0;
+      s.d=m.history.prices.map(p=>dig(p,s.pip));draw();
+    }else if(m.msg_type==="tick"){
+      const s=store[m.tick.symbol];if(!s)return;
+      s.pip=m.tick.pip_size;s.d.push(dig(m.tick.quote,s.pip));
+      if(s.d.length>5000)s.d.shift();
+      if(!raf)raf=requestAnimationFrame(()=>{raf=0;draw()});
+    }
+  };
+}
+
+function analyze(d,L){
+  const x=d.slice(-L),n=x.length,f=Array(10).fill(0);
+  x.forEach(v=>f[v]++);
+  const T=Array.from({length:10},()=>Array(10).fill(0));
+  for(let i=1;i<n;i++)T[x[i-1]][x[i]]++;
+  return{x,n,f,T,cur:x[n-1]};
+}
+function signal(a,strat){
+  if(a.n<30)return{t:"Collecting ticks…",s:""};
+  const row=a.T[a.cur],m=row.reduce((p,c)=>p+c,0);
+  if(m<8)return{t:"Too few samples after digit "+a.cur,s:"n="+m};
+  if(strat==="match"){
+    let b=0;row.forEach((v,i)=>{if(v>row[b])b=i});
+    const p=row[b]/m,z=(p-.1)/Math.sqrt(.09/m);
+    return z>=2?{t:"Match "+b+" leaning",s:`after ${a.cur}: ${(p*100).toFixed(0)}% vs 10% baseline (n=${m})`}
+               :{t:"No clear digit",s:`strongest next digit ${b} at ${(p*100).toFixed(0)}% (n=${m})`};
+  }
+  let best={z:-9};
+  for(let b=0;b<=8;b++){ // Over b: digit > b
+    let c=0;for(let i=b+1;i<10;i++)c+=row[i];
+    const p0=(9-b)/10,p=c/m,z=(p-p0)/Math.sqrt(p0*(1-p0)/m);
+    if(z>best.z)best={z,l:"Over "+b,p,p0};
+  }
+  for(let b=1;b<=9;b++){ // Under b: digit < b
+    let c=0;for(let i=0;i<b;i++)c+=row[i];
+    const p0=b/10,p=c/m,z=(p-p0)/Math.sqrt(p0*(1-p0)/m);
+    if(z>best.z)best={z,l:"Under "+b,p,p0};
+  }
+  return best.z>=2?{t:best.l+" suggested",s:`after ${a.cur}: ${(best.p*100).toFixed(0)}% vs ${(best.p0*100).toFixed(0)}% baseline (n=${m})`}
+                  :{t:"No clear side",s:`n=${m} transitions after digit ${a.cur}`};
+}
+function mesh(a){
+  const C=150,R=108,pos=i=>{const t=(-90+i*36)*Math.PI/180;return[C+R*Math.cos(t),C+R*Math.sin(t)]};
+  let mx=1;for(let i=0;i<10;i++)for(let j=i+1;j<10;j++)mx=Math.max(mx,a.T[i][j]+a.T[j][i]);
+  let o="";
+  for(let i=0;i<10;i++)for(let j=i+1;j<10;j++){
+    const w=a.T[i][j]+a.T[j][i];if(!w)continue;
+    const[p,q]=[pos(i),pos(j)];
+    o+=`<line class="e" x1="${p[0]}" y1="${p[1]}" x2="${q[0]}" y2="${q[1]}" stroke-width="${.5+2.5*w/mx}" opacity="${.15+.5*w/mx}"/>`;
+  }
+  const row=a.T[a.cur];let nx=0;row.forEach((v,i)=>{if(v>row[nx])nx=i});
+  if(nx!==a.cur&&row[nx]){const p=pos(a.cur),q=pos(nx);
+    o+=`<line x1="${p[0]}" y1="${p[1]}" x2="${q[0]}" y2="${q[1]}" stroke="var(--gs)" stroke-width="2.5" stroke-dasharray="5 4"/>`}
+  const rk=[...Array(10).keys()].sort((x,y)=>a.f[y]-a.f[x]);
+  const cls=i=>i===rk[0]?"m":i===rk[1]?"s":i===rk[9]?"l":"";
+  for(let i=0;i<10;i++){
+    const[x,y]=pos(i);
+    o+=`<circle class="n ${cls(i)} ${i===a.cur?"c":""}" cx="${x}" cy="${y}" r="19"/>`+
+       `<text x="${x}" y="${y+1}" font-size="15" font-weight="600">${i}</text>`+
+       `<text x="${x}" y="${y+12}" font-size="8" opacity=".7">${(a.f[i]/a.n*100).toFixed(0)}%</text>`;
+  }
+  return o+`<text x="${C}" y="${C+16}" font-size="48" font-weight="700">${a.cur}</text>`;
+}
+function build(){
+  const g=document.getElementById("grid");
+  panels.forEach((p,k)=>{
+    const c=document.createElement("div");c.className="card";
+    c.innerHTML=`<h2>Transition Mesh</h2>
+    <div class="row"><label>Index<select class="sy">${SYMS.map(s=>`<option value="${s[0]}"${s[0]===p.sym?" selected":""}>${s[1]}</option>`).join("")}</select></label>
+    <label>Lookback (ticks)<input class="lb" type="number" min="30" max="5000" value="${p.lb}"></label></div>
+    <div class="row"><label>Strategy<select class="sg"><option value="ou">Over / Under transitions</option><option value="match">Matches (next digit)</option></select></label></div>
+    <svg viewBox="0 0 300 300"></svg><div class="strip"></div><div class="sig"></div>`;
+    c.querySelector(".sy").onchange=e=>{p.sym=e.target.value;sub(p.sym);draw()};
+    c.querySelector(".lb").onchange=e=>{p.lb=Math.max(30,Math.min(5000,+e.target.value||100));draw()};
+    c.querySelector(".sg").onchange=e=>{p.strat=e.target.value;draw()};
+    p.el=c;g.appendChild(c);
+  });
+}
+function draw(){
+  panels.forEach(p=>{
+    const s=store[p.sym];if(s&&s.err){p.el.querySelector(".sig").textContent=p.sym+": "+s.err;return}if(!s||s.d.length<2)return;
+    const a=analyze(s.d,p.lb);
+    p.el.querySelector("svg").innerHTML=mesh(a);
+    p.el.querySelector(".strip").innerHTML=a.x.slice(-15).map(v=>`<span>${v}</span>`).join("");
+    const r=signal(a,p.strat);
+    p.el.querySelector(".sig").innerHTML=r.t+(r.s?`<small>${r.s}</small>`:"");
+  });
+  scan();
+}
+function scan(){
+  if(!document.getElementById("sup").open)return;
+  const m=document.getElementById("ss").value,L=panels.map(p=>p.lb);
+  document.getElementById("sc").innerHTML="<tr><th>Index<th>Last<th>"+L.join("<th>")+"<th>Agree</tr>"+SYMS.map(([k,nm])=>{
+    const s=store[k];
+    if(!s||s.d.length<30)return`<tr><td>${nm}<td colspan="5">${s&&s.err?"unavailable":"loading…"}</tr>`;
+    const r=L.map(l=>{const q=signal(analyze(s.d,l),m);return/suggested|leaning/.test(q.t)?q.t.replace(/ (suggested|leaning)/,""):"–"});
+    const ag=r[0]!=="–"&&r.every(x=>x===r[0]);
+    return`<tr class="${ag?"ag":""}"><td>${nm}<td>${s.d[s.d.length-1]}<td>${r.join("<td>")}<td>${ag?"✓ "+r[0]:""}</tr>`;
+  }).join("");
+}
+const $=id=>document.getElementById(id);
+function bot(){
+  const v=id=>$(id).value,sym=v("xs"),ct=v("xc"),d=v("xd"),stk=+v("xk"),mu=+v("xm"),mx=+v("xx"),tp=+v("xt"),sl=+v("xl"),
+  tt=/MATCH|DIFF/.test(ct)?"matchesdiffers":"overunder",
+  N=n=>`<block type="math_number"><field name="NUM">${n}</field></block>`,
+  G=`<block type="variables_get"><field name="VAR" id="vS">Stake</field></block>`,
+  S=x=>`<block type="variables_set"><field name="VAR" id="vS">Stake</field><value name="VALUE">${x}</value></block>`,
+  C=(o,a,b)=>`<block type="logic_compare"><field name="OP">${o}</field><value name="A">${a}</value><value name="B">${b}</value></block>`,
+  P=`<block type="total_profit"></block>`,
+  F=(n,x)=>`<field name="${n}">${x}</field>`,
+  sh=n=>`<shadow type="math_number_positive"><field name="NUM">${n}</field></shadow>`,
+  ch=(...b)=>b.reduceRight((a,x)=>a?x.replace(/<\/block>$/,`<next>${a}</next></block>`):x,"");
+  const trade=`<block type="trade_definition" x="0" y="0"><statement name="TRADE_OPTIONS">`+ch(
+    `<block type="trade_definition_market">${F("MARKET_LIST","synthetic_index")}${F("SUBMARKET_LIST","random_index")}${F("SYMBOL_LIST",sym)}</block>`,
+    `<block type="trade_definition_tradetype">${F("TRADETYPE_CATEGORY_LIST","digits")}${F("TRADETYPE_LIST",tt)}</block>`,
+    `<block type="trade_definition_contracttype">${F("TYPE_LIST",ct)}</block>`,
+    `<block type="trade_definition_candleinterval">${F("CANDLEINTERVAL_LIST",60)}</block>`,
+    `<block type="trade_definition_restartbuysell">${F("TIME_MACHINE_ENABLED","FALSE")}</block>`,
+    `<block type="trade_definition_restartonerror">${F("RESTARTONERROR","TRUE")}</block>`)+
+    `</statement><statement name="INITIALIZATION">${S(N(stk))}</statement><statement name="SUBMARKET"><block type="trade_definition_tradeoptions"><mutation xmlns="http://www.w3.org/1999/xhtml" has_first_barrier="false" has_second_barrier="false" has_prediction="true"></mutation>${F("DURATIONTYPE_LIST","t")}<value name="DURATION">${sh(1)}</value><value name="AMOUNT">${sh(1)}${G}</value><value name="PREDICTION">${sh(d)}</value></block></statement></block>`;
+  const before=`<block type="before_purchase" x="0" y="380"><statement name="BEFOREPURCHASE_STACK"><block type="purchase">${F("PURCHASE_LIST",ct)}</block></statement></block>`;
+  const after=`<block type="after_purchase" x="0" y="560"><statement name="AFTERPURCHASE_STACK">`+ch(
+    `<block type="controls_if"><mutation else="1"></mutation><value name="IF0"><block type="contract_check_result">${F("CHECK_RESULT","win")}</block></value><statement name="DO0">${S(N(stk))}</statement><statement name="ELSE">${ch(S(`<block type="math_arithmetic">${F("OP","MULTIPLY")}<value name="A">${G}</value><value name="B">${N(mu)}</value></block>`),`<block type="controls_if"><value name="IF0">${C("GT",G,N(mx))}</value><statement name="DO0">${S(N(stk))}</statement></block>`)}</statement></block>`,
+    `<block type="controls_if"><value name="IF0"><block type="logic_operation">${F("OP","AND")}<value name="A">${C("LT",P,N(tp))}</value><value name="B">${C("GT",P,N(-sl))}</value></block></value><statement name="DO0"><block type="trade_again"></block></statement></block>`)+`</statement></block>`;
+  return`<xml xmlns="https://developers.google.com/blockly/xml" is_dbot="true" collection="false"><variables><variable id="vS">Stake</variable></variables>${trade}${before}${after}</xml>`;
+}
+$("xs").innerHTML=SYMS.map(s=>`<option value="${s[0]}">${s[1]}</option>`).join("");
+$("xd").innerHTML=[...Array(10).keys()].map(i=>`<option>${i}</option>`).join("");
+$("xs").value="R_50";$("xd").value="3";
+$("sup").ontoggle=draw;$("ss").onchange=draw;
+$("dl").onclick=()=>{const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([bot()],{type:"application/xml"}));a.download=`M4_${$("xs").value}_${$("xc").value}.xml`;a.click()};
+build();connect();
+</script></body></html>
