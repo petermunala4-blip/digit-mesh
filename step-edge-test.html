@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step Index edge test</title>
+<style>
+:root{--bg:#f4f6f8;--ink:#14202b;--mut:#5c6874;--line:#d7dde3;--card:#fff;--win:#0a7d4f;--loss:#b42318;--acc:#1f4fd8}
+@media(prefers-color-scheme:dark){:root{--bg:#0e1317;--ink:#e8edf2;--mut:#93a0ad;--line:#26303a;--card:#161d24;--win:#3ccf91;--loss:#ff7b72;--acc:#7aa2ff}}
+*{box-sizing:border-box}
+body{margin:0 auto;max-width:600px;padding:14px;background:var(--bg);color:var(--ink);font:15px/1.45 system-ui,sans-serif}
+h1{font-size:20px;margin:0 0 2px}
+p.s{color:var(--mut);margin:0 0 12px;font-size:13px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:12px}
+label{display:block;font-size:13px;color:var(--mut)}
+select{width:100%;padding:9px;margin-top:3px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font-size:15px}
+.big{font-size:22px;font-weight:700}
+.g{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:right;padding:5px 4px;border-bottom:1px solid var(--line)}
+th:first-child,td:first-child{text-align:left}
+.box{overflow-x:auto}
+.w{color:var(--win)}.l{color:var(--loss)}
+#v{font-size:14px}
+</style></head><body>
+<h1>Step Index edge test</h1>
+<p class="s">Checks whether any simple rule beats a coin flip on Step Index 100. It reads ticks only and places no trades.</p>
+
+<div class="card">
+<label>Contract to test<select id="h"><option value="1">Next tick up or down</option><option value="5" selected>Rise/Fall over 5 ticks</option></select></label>
+</div>
+
+<div class="card">
+<div class="g"><div>Ticks<div class="big" id="n">0</div></div><div>Break-even win rate<div class="big">51.3%</div></div></div>
+<p id="st" class="s" style="margin:8px 0 0">Connecting…</p>
+</div>
+
+<div class="card" id="v"></div>
+
+<div class="card box">
+<table><thead><tr><th>Rule (after…)</th><th>n</th><th>Rise %</th><th>z</th><th>1st half</th><th>2nd half</th></tr></thead><tbody id="t"></tbody></table>
+</div>
+<p class="s">z shows how far a rate is from 50% in standard errors. With about 60 rules tested, a few will look odd by chance, so only |z| above 3.3 means anything. A real edge must also hold in both halves and clear 51.3%.</p>
+
+<script>
+const $=id=>document.getElementById(id);
+let ticks=[],ws,last=0;
+const HOSTS=['ws.derivws.com','ws.binaryws.com'];let hi=0;
+
+function connect(){
+  const host=HOSTS[hi%HOSTS.length];$('st').textContent='Connecting to '+host+'…';
+  ws=new WebSocket('wss://'+host+'/websockets/v3?app_id=1089');
+  ws.onopen=()=>{
+    $('st').textContent='Loading 5,000 recent ticks…';
+    ws.send(JSON.stringify({ticks_history:'stpRNG',count:5000,end:'latest',style:'ticks'}));
+  };
+  ws.onclose=ev=>{$('st').textContent='Could not stay connected to '+host+' (code '+ev.code+'). Trying the next server…';hi++;setTimeout(connect,2000)};
+  ws.onmessage=e=>{
+    const m=JSON.parse(e.data);
+    if(m.msg_type==='history'){
+      ticks=m.history.prices.map(Number);
+      ws.send(JSON.stringify({ticks:'stpRNG',subscribe:1}));
+      $('st').textContent='Loaded history. Collecting live ticks.';
+      run();
+    }else if(m.msg_type==='tick'){
+      ticks.push(+m.tick.quote);
+      if(ticks.length-last>=25)run();
+    }else if(m.error){$('st').textContent='Error: '+m.error.message}
+  };
+}
+
+function run(){
+  last=ticks.length;$('n').textContent=ticks.length;
+  const H=+$('h').value,N=ticks.length;
+  const P=ticks.map(x=>Math.round(x*10));           // price in 0.1 steps
+  const mv=[];for(let i=1;i<N;i++)mv.push(Math.sign(P[i]-P[i-1]));
+  // entry index i: price P[i], moves before it are mv[i-1], mv[i-2]...
+  const rules=[];
+  const add=(name,f)=>rules.push({name,f,w:[0,0],c:[0,0]});
+  add('Any tick',i=>true);
+  for(let k=1;k<=5;k++){
+    add(k+' up in a row',i=>{for(let j=1;j<=k;j++)if(mv[i-j]!==1)return false;return true});
+    add(k+' down in a row',i=>{for(let j=1;j<=k;j++)if(mv[i-j]!==-1)return false;return true});
+  }
+  for(let d=0;d<10;d++)add('Last digit '+d,i=>((P[i]%10)+10)%10===d);
+  for(let b=0;b<8;b++){
+    const s=[1,2,3].map(j=>(b>>(j-1))&1?1:-1);
+    add('Last 3 moves '+s.map(x=>x>0?'U':'D').join(''),i=>mv[i-1]===s[0]&&mv[i-2]===s[1]&&mv[i-3]===s[2]);
+  }
+  const mid=Math.floor(N/2);
+  for(let i=6;i+H<N;i++){
+    const win=P[i+H]>P[i]?1:(P[i+H]<P[i]?0:-1);
+    if(win<0)continue;                                // ties: none expected here
+    const half=i<mid?0:1;
+    for(const r of rules)if(r.f(i)){r.c[half]++;r.w[half]+=win}
+  }
+  const adj=H===1?1:Math.sqrt(H);                      // overlapping windows inflate z
+  const out=rules.map(r=>{
+    const n=r.c[0]+r.c[1],w=r.w[0]+r.w[1];
+    const p=n?w/n:.5,z=n?(p-.5)/Math.sqrt(.25/n)/adj:0;
+    return{name:r.name,n,p,z,p0:r.c[0]?r.w[0]/r.c[0]:.5,p1:r.c[1]?r.w[1]/r.c[1]:.5};
+  }).filter(r=>r.n>=30).sort((a,b)=>Math.abs(b.z)-Math.abs(a.z));
+  const f=x=>(x*100).toFixed(1);
+  $('t').innerHTML=out.slice(0,14).map(r=>`<tr><td>${r.name}</td><td>${r.n}</td><td>${f(r.p)}</td><td class="${Math.abs(r.z)>3.3?'w':''}">${r.z.toFixed(1)}</td><td>${f(r.p0)}</td><td>${f(r.p1)}</td></tr>`).join('');
+  const hits=out.filter(r=>Math.abs(r.z)>3.3);
+  const edge=out.filter(r=>Math.max(r.p,1-r.p)>0.513&&Math.max(r.p0,1-r.p0)>0.513&&Math.max(r.p1,1-r.p1)>0.513&&(r.p-.5)*(r.p0-.5)>0&&(r.p-.5)*(r.p1-.5)>0);
+  $('v').innerHTML=hits.length===0
+    ?'<b>No rule stands out.</b> Every pattern is within normal chance, so none beats a coin flip. More ticks make this clearer.'
+    :`<b>${hits.length} rule(s) stand out.</b> ${edge.length?'Some hold in both halves above 51.3%. Test them on fresh ticks before trusting them.':'None hold in both halves above 51.3%, so treat them as chance.'}`;
+}
+$('h').onchange=run;
+connect();
+</script></body></html>
