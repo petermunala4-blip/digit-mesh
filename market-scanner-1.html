@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Market scanner</title>
+<style>
+:root{--bg:#f4f6f8;--ink:#14202b;--mut:#5c6874;--line:#d7dde3;--card:#fff;--win:#0a7d4f;--loss:#b42318;--acc:#1f4fd8}
+@media(prefers-color-scheme:dark){:root{--bg:#0e1317;--ink:#e8edf2;--mut:#93a0ad;--line:#26303a;--card:#161d24;--win:#3ccf91;--loss:#ff7b72;--acc:#7aa2ff}}
+*{box-sizing:border-box}
+body{margin:0 auto;max-width:640px;padding:14px;background:var(--bg);color:var(--ink);font:15px/1.45 system-ui,sans-serif}
+h1{font-size:20px;margin:0 0 2px}
+p.s{color:var(--mut);margin:0 0 12px;font-size:13px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:12px}
+label{display:block;font-size:13px;color:var(--mut)}
+select{width:100%;padding:9px;margin-top:3px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font-size:15px}
+.g{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th,td{text-align:right;padding:6px 3px;border-bottom:1px solid var(--line);vertical-align:top}
+th:first-child,td:first-child{text-align:left}
+small{display:block;color:var(--mut);font-size:11px}
+.box{overflow-x:auto}
+.w{color:var(--win)}.l{color:var(--loss)}
+#st{font-size:13px;color:var(--mut);margin:0}
+</style></head><body>
+<h1>Market scanner</h1>
+<p class="s">Compares Step, Volatility, Jump, Boom and Crash indices on what each trade costs and whether any pattern beats it. Reads data only and places no trades.</p>
+
+<div class="card">
+<div class="g">
+<label>Contract<select id="h"><option value="2">Rise/Fall 2 ticks</option><option value="5" selected>Rise/Fall 5 ticks</option><option value="10">Rise/Fall 10 ticks</option></select></label>
+<label>Sort by<select id="sort"><option value="er">Best return (known payouts)</option><option value="z">Strongest pattern</option><option value="name">Market</option></select></label>
+</div>
+<p id="st" style="margin-top:8px">Connecting…</p>
+</div>
+
+<div class="card" id="v"></div>
+
+<div class="card box">
+<table><thead><tr><th>Market</th><th>Ticks</th><th>Ties</th><th>Rise wins</th><th>Fall wins</th><th>Rule z</th></tr></thead><tbody id="t"></tbody></table>
+</div>
+<p class="s">Rise wins and Fall wins are how often each side finished in profit over the recent ticks. Rule z is the strongest of 27 simple patterns, measured against that market's own average win rate, because payouts are priced from that average. Return shows only where the payout is known, and ~ means it was assumed from your earlier trades. With about 900 tests, only a z above 4 that holds in both halves of the data means anything, and it must still beat the payout margin of about 2.5% at 5 ticks.</p>
+
+<script>
+const $=id=>document.getElementById(id);
+const SYMS=[
+['stpRNG','Step 100'],['stpRNG2','Step 200'],['stpRNG3','Step 300'],['stpRNG4','Step 400'],['stpRNG5','Step 500'],
+['R_10','Vol 10'],['R_25','Vol 25'],['R_50','Vol 50'],['R_75','Vol 75'],['R_100','Vol 100'],
+['1HZ10V','Vol 10 (1s)'],['1HZ15V','Vol 15 (1s)'],['1HZ25V','Vol 25 (1s)'],['1HZ30V','Vol 30 (1s)'],['1HZ50V','Vol 50 (1s)'],['1HZ75V','Vol 75 (1s)'],['1HZ90V','Vol 90 (1s)'],['1HZ100V','Vol 100 (1s)'],
+['JD10','Jump 10'],['JD25','Jump 25'],['JD50','Jump 50'],['JD75','Jump 75'],['JD100','Jump 100'],
+['BOOM300N','Boom 300'],['BOOM500','Boom 500'],['BOOM600','Boom 600'],['BOOM900','Boom 900'],['BOOM1000','Boom 1000'],
+['CRASH300N','Crash 300'],['CRASH500','Crash 500'],['CRASH600','Crash 600'],['CRASH900','Crash 900'],['CRASH1000','Crash 1000']];
+const EP=['wss://api.derivws.com/trading/v1/options/ws/public','wss://ws.derivws.com/websockets/v3?app_id=1089','wss://ws.binaryws.com/websockets/v3?app_id=1089'];
+let ws,hi=0,opened=false,H=5,host='';
+const S={};SYMS.forEach(([id,name])=>S[id]={name,m:new Map(),pip:2,err:'',pay:{}});
+const send=o=>{if(ws&&ws.readyState===1)ws.send(JSON.stringify(o))};
+
+function connect(){
+  const url=EP[hi%EP.length];host=url.split('/')[2];opened=false;
+  $('st').textContent='Connecting to '+host+'…';
+  try{ws=new WebSocket(url)}catch(e){hi++;setTimeout(connect,2000);return}
+  ws.onopen=()=>{
+    opened=true;$('st').textContent='Connected to '+host+'. Loading markets…';
+    SYMS.forEach(([id],k)=>setTimeout(()=>send({ticks_history:id,count:5000,end:'latest',style:'ticks',subscribe:1}),k*60));
+    payouts();
+  };
+  ws.onclose=ev=>{
+    if(!opened)hi++;
+    $('st').textContent=(opened?'Disconnected':'Could not connect')+' ('+host+', code '+ev.code+'). Retrying…';
+    setTimeout(connect,opened?2000:2500);
+  };
+  ws.onmessage=e=>{
+    const m=JSON.parse(e.data),q=m.echo_req||{};
+    if(!m.error&&m.errors&&m.errors[0])m.error=m.errors[0];
+    if(m.error){
+      if(q.ticks_history&&S[q.ticks_history])S[q.ticks_history].err=m.error.message;
+      else if(!q.proposal)$('st').textContent='Error: '+m.error.message;
+      return;
+    }
+    if(m.msg_type==='history'){
+      const s=S[q.ticks_history];if(!s)return;
+      s.pip=m.pip_size||s.pip;s.err='';
+      m.history.times.forEach((t,i)=>s.m.set(+t,+m.history.prices[i]));
+    }else if(m.msg_type==='tick'){
+      const s=S[m.tick.symbol];if(!s)return;
+      s.pip=m.tick.pip_size;s.m.set(+m.tick.epoch,+m.tick.quote);
+    }else if(m.msg_type==='proposal'){
+      const s=S[q.symbol];if(s&&q.duration===H)s.pay[q.contract_type]=+m.proposal.payout;
+    }
+  };
+}
+function payouts(){
+  SYMS.forEach(([id],k)=>['CALL','PUT'].forEach((t,j)=>setTimeout(()=>
+    send({proposal:1,amount:1,basis:'stake',contract_type:t,currency:'USD',duration:H,duration_unit:'t',symbol:id}),3000+(k*2+j)*90)));
+}
+
+function analyze(s){
+  const e=[...s.m.entries()].sort((a,b)=>a[0]-b[0]),n=e.length;
+  if(n<200)return null;
+  const P=e.map(x=>x[1]),D=P.map(p=>+p.toFixed(s.pip).slice(-1));
+  const mv=P.map((p,i)=>i?Math.sign(p-P[i-1]):0);
+  const fb=s.name.startsWith('Step')?(H===5?1.95:H===2?3.82:0):0;
+  const pr=s.pay.CALL||fb,pf=s.pay.PUT||fb,known=!!(pr&&pf),assumed=known&&!(s.pay.CALL&&s.pay.PUT);
+  const R=[],add=(name,f)=>R.push({name,f,c:[0,0],u:[0,0],d:[0,0]});
+  for(let k=1;k<=3;k++){
+    add(k+' up in a row',i=>{for(let j=1;j<=k;j++)if(mv[i-j]!==1)return false;return true});
+    add(k+' down in a row',i=>{for(let j=1;j<=k;j++)if(mv[i-j]!==-1)return false;return true});
+  }
+  for(let d=0;d<10;d++)add('last digit '+d,i=>D[i]===d);
+  for(let b=0;b<8;b++){
+    const t=[1,2,3].map(j=>(b>>(j-1))&1?1:-1);
+    add('moves '+t.map(x=>x>0?'U':'D').join(''),i=>mv[i-1]===t[0]&&mv[i-2]===t[1]&&mv[i-3]===t[2]);
+  }
+  const mid=Math.floor(n/2);let tot=0,up=0,dn=0,tie=0;
+  for(let i=3;i+H<n;i++){
+    const o=Math.sign(P[i+H]-P[i]),h=i<mid?0:1;
+    tot++;if(o>0)up++;else if(o<0)dn++;else tie++;
+    for(const r of R)if(r.f(i)){r.c[h]++;if(o>0)r.u[h]++;if(o<0)r.d[h]++}
+  }
+  let best={z:-99,txt:'–',both:false};
+  for(const r of R){
+    const nr=r.c[0]+r.c[1];if(nr<100||r.c[0]<30||r.c[1]<30)continue;
+    for(const [side,key,base] of [['Rise','u',up/tot],['Fall','d',dn/tot]]){
+      const p=(r[key][0]+r[key][1])/nr;
+      const z=(p-base)/Math.sqrt(Math.max(base*(1-base),.05)/nr)/Math.sqrt(H);
+      if(z>best.z)best={z,txt:r.name+' → '+side,both:r[key][0]/r.c[0]>base&&r[key][1]/r.c[1]>base};
+    }
+  }
+  return{n,tie:tie/tot,pu:up/tot,pd:dn/tot,known,er:known?up/tot*pr-1:null,ef:known?dn/tot*pf-1:null,best,assumed};
+}
+
+function draw(){
+  H=+$('h').value;
+  const rows=[];let nTot=0,loaded=0;
+  for(const [id] of SYMS){
+    const s=S[id];nTot+=s.m.size;
+    const a=analyze(s);if(a){loaded++;rows.push({s,a})}
+  }
+  const key=$('sort').value,mx=a=>a.known?Math.max(a.er,a.ef):-9;
+  rows.sort((x,y)=>key==='z'?y.a.best.z-x.a.best.z:key==='name'?0:mx(y.a)-mx(x.a));
+  const f=v=>(v>0?'+':'')+(v*100).toFixed(1)+'%',pc=v=>(v*100).toFixed(1)+'%';
+  $('t').innerHTML=rows.map(({s,a})=>`<tr><td>${s.name}<small>${a.best.txt}${a.known?' · return '+(a.assumed?'~':'')+f(a.er)+' / '+f(a.ef):' · payout n/a'}</small></td><td>${a.n}</td><td>${(a.tie*100).toFixed(0)}%</td>`+
+    `<td>${pc(a.pu)}</td><td>${pc(a.pd)}</td>`+
+    `<td class="${a.best.z>4?'w':''}">${a.best.z.toFixed(1)}</td></tr>`).join('');
+  const failed=SYMS.filter(([id])=>S[id].err&&!analyze(S[id])).length;
+  if(opened)$('st').textContent='Live on '+host+'. '+loaded+' markets analysed'+(failed?', '+failed+' unavailable':'')+', '+nTot.toLocaleString()+' ticks.';
+  if(!rows.length){$('v').textContent='Loading ticks…';return}
+  const hits=rows.filter(r=>r.a.best.z>4&&r.a.best.both);
+  const kn=rows.filter(r=>r.a.known),top=[...kn].sort((x,y)=>mx(y.a)-mx(x.a))[0];
+  let txt=hits.length
+    ?`<b>${hits.length} market(s) show a pattern that beats that market's own average.</b> ${hits.map(r=>r.s.name+' ('+r.a.best.txt+')').join(', ')}. A pattern must also beat the payout margin, so test it on fresh ticks before trusting it.`
+    :`<b>No market has a pattern that beats its own average.</b> Every rule is within chance.`;
+  if(top){const nn=kn.reduce((t,r)=>t+r.a.n,0)/kn.length,noise=Math.sqrt(.25/(nn/H))*1.95*100;
+    txt+=`<br><small>Payouts are known for ${kn.length} markets. Best sample return: ${top.s.name} at ${f(mx(top.a))} per $1. Differences under about ±${noise.toFixed(0)}% are noise.</small>`}
+  else txt+='<br><small>Deriv did not return payout quotes, so returns are not shown.</small>';
+  $('v').innerHTML=txt+'<br><small>Boom and Crash win rates near 99% are normal for them. Their payouts are priced for that, so it is not an opportunity.</small>';
+}
+$('h').onchange=()=>{H=+$('h').value;SYMS.forEach(([id])=>S[id].pay={});payouts();draw()};
+$('sort').onchange=draw;
+setInterval(draw,3000);
+connect();
+</script></body></html>
